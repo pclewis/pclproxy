@@ -131,18 +131,19 @@ handle_write(struct sockinfo *to, struct sockinfo *from)
 static void
 run_server(int listen_port, const char* connect_host, int connect_port)
 {
-  printf("Starting server on %d, connecting to %s:%d\n", listen_port, connect_host, connect_port);
   int listen_fd=-1;
   struct sockaddr_in listen_addr;
   struct connection *connections = NULL;
   fd_set read_fd_set, write_fd_set;
+  int enable = 1;
+
+  printf("Starting server on %d, connecting to %s:%d\n", listen_port, connect_host, connect_port);
 
   if((listen_fd=socket(AF_INET, SOCK_STREAM, 0))<0) {
     perror("socket");
     goto done;
   }
 
-  int enable = 1;
   setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
 
   listen_addr.sin_family = AF_INET;
@@ -189,7 +190,7 @@ run_server(int listen_port, const char* connect_host, int connect_port)
         conn->closing = handle_read(&conn->client);
         if(conn->server.fd<0) { // no server connection yet
           char *eor = NULL;
-          if((eor=memmem(conn->client.buffer, conn->client.buf_len, "\r\n\r\n", 4)) != NULL) { // read full request
+          if((eor=strstr(conn->client.buffer, "\r\n\r\n")) != NULL) { // read full request
             char *eol = memchr(conn->client.buffer, '\r', conn->client.buf_len);
             char *method  = strtok(conn->client.buffer, " ");
             char *path    = strtok(NULL, " ");
@@ -204,13 +205,14 @@ run_server(int listen_port, const char* connect_host, int connect_port)
             } else if (strcmp(method, "CONNECT") == 0) {
               char *host = strtok(path, ":");
               char *port = strtok(NULL, ":");
+	      int n;
               conn->server.fd = do_connect(host, port ? atoi(port) : 443, &conn->server.addr);
               // Add connection success response
               strcpy(conn->server.buffer, "HTTP/1.0 200 Connection established\r\n\r\n");
               conn->server.buf_len = strlen(conn->server.buffer);
 
               // Consume original request
-              int n = (eor - conn->client.buffer) + 4;
+              n = (eor - conn->client.buffer) + 4;
               conn->client.buf_len -= n;
               if(conn->client.buf_len>0) {
                 memmove(conn->client.buffer, conn->client.buffer + n, conn->client.buf_len);
@@ -220,10 +222,10 @@ run_server(int listen_port, const char* connect_host, int connect_port)
               char *new_path = strtok(NULL, "");
               char *host = strtok(host_and_port, ":");
               char *port = strtok(NULL, ":");
-              conn->server.fd = do_connect(host, port ? atoi(port) : 80, &conn->server.addr);
               // Rewrite request line
               int method_len = strlen(method);
               int n = sprintf(conn->client.buffer+method_len, " /%s %s\r\n", new_path, version);
+              int ntocopy = conn->client.buf_len - ((eol+2) - conn->client.buffer);
               n = n + method_len;
 
               // GET / HTTP/1.0RN___RNStuff to moveRNRN...
@@ -233,7 +235,7 @@ run_server(int listen_port, const char* connect_host, int connect_port)
 
 
               // Shuffle bytes past rewritten space into correct spot
-              int ntocopy = conn->client.buf_len - ((eol+2) - conn->client.buffer);
+              conn->server.fd = do_connect(host, port ? atoi(port) : 80, &conn->server.addr);
               memmove(conn->client.buffer + n, eol + 1, ntocopy);
               conn->client.buf_len = n + ntocopy;
             } else {
